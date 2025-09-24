@@ -94,7 +94,7 @@ with tab1:
         index=1
     )
     ascending = st.sidebar.checkbox("Ascending", value=False)
-    topn = st.sidebar.slider("How many rows", 5, 100, 30)
+    topn = st.sidebar.slider("How many rows", 1, 600, 30)
 
     view = view.sort_values(sort_by, ascending=ascending).head(topn)
 
