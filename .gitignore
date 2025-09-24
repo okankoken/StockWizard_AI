@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# Env / secrets
+.env
+*.env
+
+# Data outputs
+data/movers.db
+data/*.csv
+data/*.parquet
+data/*.xlsx
+data/*.pkl
+data/*.feather
+data/cache/
+cron_prices.log
+
+# Streamlit
+.streamlit/
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
