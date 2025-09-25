@@ -1,33 +1,42 @@
 # -*- coding: utf-8 -*-
-# StockWizard_AI - Fetch via Yahoo "chart" JSON (no yfinance), incremental upsert
+# StockWizard_AI - Fetch via Yahoo "chart" JSON (no yfinance), full reset on each run
+# /home/train/StockWizard_AI/fetch/prices.py
 
-import os, time, random, sqlite3
+import os, time, random, sqlite3, re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pandas as pd
 import requests
-import re
-import time
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "data"
+DB = DATA_DIR / "movers.db"
+SYMS = DATA_DIR / "symbols_bist100.txt"
+
+# Tunables via env
+MAX_SYMBOLS_PER_RUN = int(os.environ.get("RUN_MAX_SYMBOLS", "100000"))  # high enough to cover all
+INIT_DAYS           = int(os.environ.get("RUN_INIT_DAYS", "800"))
+RETRIES             = int(os.environ.get("RUN_RETRIES", "6"))
+BASE_BACKOFF        = float(os.environ.get("RUN_BASE_BACKOFF", "4.0"))
+BACKOFF_JITTER      = float(os.environ.get("RUN_BACKOFF_JITTER", "1.5"))
+USER_AGENT          = os.environ.get("RUN_UA", "Mozilla/5.0")
 
 class SymbolNotFoundError(Exception):
     pass
 
+def epoch_utc(dt: datetime) -> int:
+    return int(dt.replace(tzinfo=timezone.utc).timestamp())
 
-ROOT = Path(__file__).resolve().parents[1]
-DB = ROOT / "data" / "movers.db"
-SYMS = ROOT / "data" / "symbols_bist100.txt"
+def ensure_dirs():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Tunables via env
-MAX_SYMBOLS_PER_RUN = int(os.environ.get("RUN_MAX_SYMBOLS", "600"))    # how many symbols to process this run
-INIT_DAYS           = int(os.environ.get("RUN_INIT_DAYS", "800"))    # initial lookback window
-LOOKBACK_PAD        = int(os.environ.get("RUN_LOOKBACK_PAD", "12"))  # overlap days on resume
-RETRIES             = int(os.environ.get("RUN_RETRIES", "6"))
-BASE_BACKOFF        = float(os.environ.get("RUN_BASE_BACKOFF", "6.0"))
-BACKOFF_JITTER      = float(os.environ.get("RUN_BACKOFF_JITTER", "2.0"))
-USER_AGENT          = os.environ.get("RUN_UA", "Mozilla/5.0")
-
-def ensure_schema(conn: sqlite3.Connection):
-    conn.execute("""
+def reset_db():
+    # delete db file to guarantee a fresh start
+    if DB.exists():
+        DB.unlink()
+    con = sqlite3.connect(str(DB))
+    cur = con.cursor()
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS prices(
         symbol TEXT NOT NULL,
         date   TEXT NOT NULL,
@@ -35,43 +44,32 @@ def ensure_schema(conn: sqlite3.Connection):
         PRIMARY KEY (symbol, date)
     );
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_prices_symbol_date ON prices(symbol, date);")
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS fetch_state(
-        id INTEGER PRIMARY KEY CHECK (id=1),
-        cursor INTEGER NOT NULL
-    );
-    """)
-    cur = conn.execute("SELECT cursor FROM fetch_state WHERE id=1").fetchone()
-    if cur is None:
-        conn.execute("INSERT INTO fetch_state(id, cursor) VALUES (1, 0);")
-    conn.commit()
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_prices_symbol_date ON prices(symbol, date);")
+    con.commit()
+    con.close()
+
+def read_text_smart(path: Path) -> str:
+    # robust file reader for unknown encodings
+    encs = ["utf-8-sig", "cp1254", "iso-8859-9", "latin-1"]
+    for enc in encs:
+        try:
+            return path.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    return path.read_bytes().decode("latin-1", errors="replace")
 
 def load_symbols() -> list[str]:
+    raw = read_text_smart(SYMS) if SYMS.exists() else ""
     symbols = []
-    with open(SYMS, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            s = re.sub(r"[^A-Za-z0-9\.]", "", line.strip().upper())
-            if not s:
-                continue
-            if not s.endswith(".IS"):
-                s += ".IS"
-            symbols.append(s)
+    for line in raw.splitlines():
+        s = re.sub(r"[^A-Za-z0-9\.]", "", line.strip().upper())
+        if not s:
+            continue
+        if not s.endswith(".IS"):
+            s += ".IS"
+        symbols.append(s)
+    # unique + sorted
     return sorted(set(symbols))
-
-def get_cursor(conn: sqlite3.Connection) -> int:
-    return int(conn.execute("SELECT cursor FROM fetch_state WHERE id=1").fetchone()[0])
-
-def set_cursor(conn: sqlite3.Connection, val: int):
-    conn.execute("UPDATE fetch_state SET cursor=? WHERE id=1", (val,))
-    conn.commit()
-
-def latest_date_for(conn: sqlite3.Connection, symbol: str) -> str | None:
-    row = conn.execute("SELECT MAX(date) FROM prices WHERE symbol=?", (symbol,)).fetchone()
-    return row[0] if row and row[0] else None
-
-def epoch_utc(dt: datetime) -> int:
-    return int(dt.replace(tzinfo=timezone.utc).timestamp())
 
 def fetch_chart(symbol: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
@@ -85,30 +83,23 @@ def fetch_chart(symbol: str, start_date: datetime, end_date: datetime) -> pd.Dat
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     r = requests.get(url, params=params, headers=headers, timeout=30)
 
-    # rate limit
     if r.status_code == 429:
         raise RuntimeError("429 Too Many Requests")
-    # kalici hata: 404 -> sembol yok
     if r.status_code == 404:
         raise SymbolNotFoundError(f"404 Not Found for {symbol}")
-
     r.raise_for_status()
-    js = r.json()
 
-    # Yahoo chart API: chart.error varsa sebebe göre davran
+    js = r.json()
     ch = js.get("chart", {}) or {}
     if ch.get("error"):
         code = (ch["error"].get("code") or "").lower()
         msg  = ch["error"].get("description") or ch["error"].get("message") or str(ch["error"])
-        # tipik olarak "Not Found", "No data found" vb kalici hatalar
-        if "not found" in code or "no data" in code or "notfound" in code or "bad request" in code:
+        if "not" in code or "no data" in code or "bad" in code:
             raise SymbolNotFoundError(f"{symbol}: {msg}")
-        # digerleri için genel hata firlat (retry edilebilir)
         raise RuntimeError(f"{symbol}: chart.error -> {msg}")
 
     res = ch.get("result") or []
     if not res:
-        # result bos ama error yoksa: veri yok/kapali; bos df dön (script devam eder)
         return pd.DataFrame()
 
     res = res[0]
@@ -138,87 +129,60 @@ def fetch_chart(symbol: str, start_date: datetime, end_date: datetime) -> pd.Dat
     df = df.dropna(subset=["close","adj_close"], how="any")
     return df
 
-
-def upsert_prices(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+def upsert_prices(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     if df is None or df.empty:
         return 0
     rows = df[["symbol","date","open","high","low","close","adj_close","volume"]].values.tolist()
-    conn.executemany("""
+    con.executemany("""
         INSERT INTO prices(symbol,date,open,high,low,close,adj_close,volume)
         VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(symbol,date) DO UPDATE SET
           open=excluded.open, high=excluded.high, low=excluded.low,
           close=excluded.close, adj_close=excluded.adj_close, volume=excluded.volume;
     """, rows)
-    conn.commit()
+    con.commit()
     return len(rows)
 
-def exp_backoff(attempt: int):
-    sleep_s = min(BASE_BACKOFF * (2 ** (attempt - 1)), 300) + random.uniform(0.0, BACKOFF_JITTER)
-    time.sleep(sleep_s)
-
-def process_symbol(conn: sqlite3.Connection, symbol: str) -> int:
-    today = datetime.now(timezone.utc).date()
-    last = latest_date_for(conn, symbol)
-    if last:
-        start = datetime.strptime(last, "%Y-%m-%d").date() - timedelta(days=LOOKBACK_PAD)
-    else:
+def fetch_all(symbols: list[str]) -> int:
+    total = 0
+    with sqlite3.connect(str(DB)) as con:
+        today = datetime.now(timezone.utc).date()
         start = today - timedelta(days=INIT_DAYS)
-    end = today + timedelta(days=1)
-
-    for attempt in range(1, RETRIES + 1):
-        try:
-            df = fetch_chart(
-                symbol,
-                datetime.combine(start, datetime.min.time()),
-                datetime.combine(end,   datetime.min.time()),
-            )
-            n = upsert_prices(conn, df)
-            print(f"{symbol}: upserted {n} rows")
-            return n
-
-        except SymbolNotFoundError as e:
-            # kalici durum -> retry etme, sembolü atla
-            print(f"{symbol}: skip (not found) -> {e}")
-            return 0
-
-        except Exception as e:
-            print(f"{symbol}: attempt {attempt}/{RETRIES} -> {e}")
-            exp_backoff(attempt)
-
-    print(f"{symbol}: failed after retries")
-    return 0
-
+        end   = today + timedelta(days=1)
+        for i, sym in enumerate(symbols[:MAX_SYMBOLS_PER_RUN], 1):
+            for attempt in range(1, RETRIES + 1):
+                try:
+                    df = fetch_chart(
+                        sym,
+                        datetime.combine(start, datetime.min.time()),
+                        datetime.combine(end,   datetime.min.time()),
+                    )
+                    n = upsert_prices(con, df)
+                    print(f"{sym}: rows {n}")
+                    total += n
+                    break
+                except SymbolNotFoundError as e:
+                    print(f"{sym}: skip -> {e}")
+                    break
+                except Exception as e:
+                    sleep_s = min(BASE_BACKOFF * (2 ** (attempt - 1)), 300) + random.uniform(0.0, BACKOFF_JITTER)
+                    print(f"{sym}: attempt {attempt}/{RETRIES} -> {e} (sleep {sleep_s:.1f}s)")
+                    time.sleep(sleep_s)
+    return total
 
 def main():
-    syms = load_symbols()
-    if not syms:
-        print("No symbols found.")
+    ensure_dirs()
+    reset_db()
+    symbols = load_symbols()
+    if not symbols:
+        print("No symbols file. Put symbols_bist100.txt under data/")
         return
+    t0 = time.perf_counter()
+    total = fetch_all(symbols)
+    dt = time.perf_counter() - t0
+    print(f"DONE. Inserted rows: {total}")
+    m, s = divmod(int(dt), 60); h, m = divmod(m, 60)
+    print(f"Elapsed: {h:d}:{m:02d}:{s:02d}")
 
-    import time
-    start_ts = time.perf_counter()   # baslangiç zamani
-
-    with sqlite3.connect(DB) as conn:
-        ensure_schema(conn)
-        cur = get_cursor(conn)
-        total = 0
-        for i in range(MAX_SYMBOLS_PER_RUN):
-            idx = (cur + i) % len(syms)
-            total += process_symbol(conn, syms[idx])
-        set_cursor(conn, (cur + MAX_SYMBOLS_PER_RUN) % len(syms))
-
-    dur = time.perf_counter() - start_ts
-    print(f"Done. Upserted rows: {total}")
-    print(f"Elapsed time: {fmt_seconds(dur)}")
-
-    
-def fmt_seconds(s: float) -> str:
-    # format seconds as H:MM:SS
-    m, sec = divmod(int(s), 60)
-    h, m = divmod(m, 60)
-    return f"{h:d}:{m:02d}:{sec:02d}"
-    
-    
 if __name__ == "__main__":
     main()

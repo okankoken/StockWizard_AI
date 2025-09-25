@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Google Custom Search helper (ASCII comments only)
-
+# /home/train/StockWizard_AI/ui/news.py
 import os
 import requests
 from pathlib import Path

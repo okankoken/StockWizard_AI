@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Build a daily snapshot from SQLite: returns + latest price + 52w hi/lo
-
+# /home/train/StockWizard_AI/ui/snapshot.py
 import sqlite3
 from pathlib import Path
 import pandas as pd
