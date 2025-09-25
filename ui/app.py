@@ -6,6 +6,9 @@ import sys, os, re, sqlite3, unicodedata
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+import requests
+AI_SERVER_URL = os.environ.get("AI_SERVER_URL", "http://localhost:8008")
+
 
 EMOJI = {
     "search": "\U0001F50D",
@@ -43,7 +46,7 @@ except Exception:
         return []
 
 # Türkçe baslik + ince tema dokunusu
-st.set_page_config(page_title="StockWizard_AI - BIST Gosterge Paneli", layout="wide")
+st.set_page_config(page_title="StockWizard_AI - BIST", layout="wide")
 
 st.markdown("""
 <style>
@@ -290,90 +293,46 @@ with tab_explorer:
 with tab_chat:
     if "messages" not in st.session_state:
         st.session_state["messages"] = [
-            {"role": "assistant", "content": "Hello. Ask about movers or a symbol. E.g.: 'top 5 losers today', 'THYAO.IS 1y', 'THYAO.IS news'."}
+            {
+                "role": "assistant",
+                "content": "Merhaba \U0001F44B  Sembol ve sorunu yaz.\nOrn: 'THYAO.IS bu hafta ne yaptı?', 'en çok yükselenler', 'SASA.IS haber'."
+            }
         ]
 
+    # Geçmişi göster
     for m in st.session_state["messages"]:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
 
-    user_msg = st.chat_input("Type your question...")
+    user_msg = st.chat_input("Sorunuzu yaz\u0131n...")
     if user_msg:
         st.session_state["messages"].append({"role": "user", "content": user_msg})
         with st.chat_message("user"):
             st.markdown(user_msg)
 
-        def ascii_fold(s: str) -> str:
-            return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
-        t = ascii_fold(user_msg).lower()
+        # Basit sembol çıkarımı (opsiyonel)
+        import re
+        toks = re.split(r"\s+", user_msg.upper())
+        sym = next((t for t in toks if t.endswith(".IS")), None)
 
+        # Backend'e gönder
         try:
-            if "haber" in t or "news" in t:
-                toks = re.split(r"\s+", user_msg.upper())
-                sym = next((tok for tok in toks if tok.endswith(".IS")), None)
-                q = sym if sym else user_msg
-                try:
-                    items = news_search(q, num=5) or []
-                except Exception:
-                    items = []
-                if items:
-                    lines = []
-                    for it in items:
-                        title = it.get("title") or ""
-                        link = it.get("link") or ""
-                        src = it.get("source") or ""
-                        if link.startswith("http"):
-                            lines.append(f"- **[{title}]({link})**\n  _{src}_")
-                        else:
-                            lines.append(f"- **{title}**\n  _{src}_")
-                    resp = "\n".join(lines)
+            with st.spinner("Yan\u0131t haz\u0131rlan\u0131yor..."):
+                r = requests.post(
+                    f"{AI_SERVER_URL}/chat",
+                    json={"message": user_msg, "symbol": sym},
+                    timeout=30
+                )
+                if r.ok:
+                    reply = r.json().get("reply", "")
                 else:
-                    resp = "No news or missing API key."
-            else:
-                def infer_window(txt: str) -> str:
-                    if ("1 yil" in txt) or ("1y" in txt) or ("1 year" in txt) or ("yillik" in txt):
-                        return "r_1y"
-                    if ("6 ay" in txt) or ("6a" in txt) or ("6 months" in txt):
-                        return "r_6m"
-                    if ("3 ay" in txt) or ("3a" in txt) or ("3 months" in txt) or ("ceyrek" in txt):
-                        return "r_3m"
-                    if ("1 ay" in txt) or ("1a" in txt) or ("1 month" in txt) or ("aylik" in txt):
-                        return "r_1m"
-                    if ("hafta" in txt) or ("1w" in txt) or ("week" in txt):
-                        return "r_1w"
-                    return "r_1d"
-
-                col = infer_window(t)
-                gain_trigs = ["artan","artmis","yukselen","gainers","up","pozitif"]
-                loss_trigs = ["dusen","eksi","kaybeden","losers","down","negatif"]
-                direction = "down" if any(w in t for w in loss_trigs) else ("up" if any(w in t for w in gain_trigs) else "up")
-
-                mnum = re.search(r"(\d+)", t)
-                limit = int(mnum.group(1)) if mnum else 10
-
-                # quick top list from snapshot
-                snap = load_snapshot()
-                if snap.empty or col not in snap.columns:
-                    resp = "Snapshot not ready."
-                else:
-                    df = snap.dropna(subset=[col]).copy()
-                    df["rank"] = df[col].rank(ascending=(direction=="down"), method="first")
-                    df = df.sort_values("rank").head(limit)
-                    if df.empty:
-                        resp = "No result."
-                    else:
-                        lines = [f"Top {limit} {'losers' if direction=='down' else 'gainers'} for {col}:"]
-                        for _, rr in df.iterrows():
-                            pct = round(float(rr[col]) * 100, 2)
-                            price = round(float(rr["last_price"]), 3) if pd.notna(rr["last_price"]) else None
-                            vz = round(float(rr["vol_z"]), 2) if pd.notna(rr["vol_z"]) else None
-                            hi = round(float(rr["hi_52w"]), 2) if pd.notna(rr["hi_52w"]) else None
-                            lo = round(float(rr["lo_52w"]), 2) if pd.notna(rr["lo_52w"]) else None
-                            lines.append(f"- {rr['symbol']}: {pct}%  price={price}  vol_z={vz}  52wHi/Lo={hi}/{lo}")
-                        resp = "\n".join(lines)
+                    reply = f"Sunucu hatas\u0131: {r.status_code} {r.text}"
         except Exception as e:
-            resp = f"Unexpected error: {e}"
+            reply = f"Ba\u011flant\u0131 hatas\u0131: {e}"
 
         with st.chat_message("assistant"):
-            st.markdown(resp)
-        st.session_state["messages"].append({"role": "assistant", "content": resp})
+            st.markdown(reply)
+        st.session_state["messages"].append({"role": "assistant", "content": reply})
+        
+        
+        
