@@ -14,9 +14,9 @@ DB = DATA_DIR / "movers.db"
 SYMS = DATA_DIR / "symbols_bist100.txt"
 
 # Tunables via env
-MAX_SYMBOLS_PER_RUN = int(os.environ.get("RUN_MAX_SYMBOLS", "100000"))  # high enough to cover all
+MAX_SYMBOLS_PER_RUN = int(os.environ.get("RUN_MAX_SYMBOLS", "100000"))
 INIT_DAYS           = int(os.environ.get("RUN_INIT_DAYS", "800"))
-RETRIES             = int(os.environ.get("RUN_RETRIES", "6"))
+RETRIES             = int(os.environ.get("RUN_RETRIES", "5"))
 BASE_BACKOFF        = float(os.environ.get("RUN_BASE_BACKOFF", "4.0"))
 BACKOFF_JITTER      = float(os.environ.get("RUN_BACKOFF_JITTER", "1.5"))
 USER_AGENT          = os.environ.get("RUN_UA", "Mozilla/5.0")
@@ -31,7 +31,6 @@ def ensure_dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def reset_db():
-    # delete db file to guarantee a fresh start
     if DB.exists():
         DB.unlink()
     con = sqlite3.connect(str(DB))
@@ -45,11 +44,18 @@ def reset_db():
     );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_prices_symbol_date ON prices(symbol, date);")
+    # NEW: symbols table for names
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS symbols(
+        symbol TEXT PRIMARY KEY,
+        short_name TEXT,
+        long_name  TEXT
+    );
+    """)
     con.commit()
     con.close()
 
 def read_text_smart(path: Path) -> str:
-    # robust file reader for unknown encodings
     encs = ["utf-8-sig", "cp1254", "iso-8859-9", "latin-1"]
     for enc in encs:
         try:
@@ -68,10 +74,12 @@ def load_symbols() -> list[str]:
         if not s.endswith(".IS"):
             s += ".IS"
         symbols.append(s)
-    # unique + sorted
     return sorted(set(symbols))
 
-def fetch_chart(symbol: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+def fetch_chart(symbol: str, start_date: datetime, end_date: datetime):
+    """
+    Returns (df, meta_names) where df is OHLCV and meta_names is dict(short_name,long_name).
+    """
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {
         "period1": epoch_utc(start_date),
@@ -98,11 +106,15 @@ def fetch_chart(symbol: str, start_date: datetime, end_date: datetime) -> pd.Dat
             raise SymbolNotFoundError(f"{symbol}: {msg}")
         raise RuntimeError(f"{symbol}: chart.error -> {msg}")
 
-    res = ch.get("result") or []
+    res = (ch.get("result") or [])
     if not res:
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
     res = res[0]
+    meta = res.get("meta", {}) or {}
+    short_name = meta.get("shortName")
+    long_name  = meta.get("longName")
+
     ts = res.get("timestamp", []) or []
     ind = res.get("indicators", {}) or {}
     quote = (ind.get("quote") or [{}])[0]
@@ -127,7 +139,7 @@ def fetch_chart(symbol: str, start_date: datetime, end_date: datetime) -> pd.Dat
 
     df = pd.DataFrame(rows, columns=["symbol","date","open","high","low","close","adj_close","volume"])
     df = df.dropna(subset=["close","adj_close"], how="any")
-    return df
+    return df, {"short_name": short_name, "long_name": long_name}
 
 def upsert_prices(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     if df is None or df.empty:
@@ -143,6 +155,18 @@ def upsert_prices(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     con.commit()
     return len(rows)
 
+def upsert_symbol(con: sqlite3.Connection, symbol: str, names: dict):
+    if not names:
+        return
+    con.execute("""
+        INSERT INTO symbols(symbol, short_name, long_name)
+        VALUES (?,?,?)
+        ON CONFLICT(symbol) DO UPDATE SET
+          short_name=COALESCE(excluded.short_name, short_name),
+          long_name =COALESCE(excluded.long_name, long_name);
+    """, (symbol, names.get("short_name"), names.get("long_name")))
+    con.commit()
+
 def fetch_all(symbols: list[str]) -> int:
     total = 0
     with sqlite3.connect(str(DB)) as con:
@@ -152,12 +176,13 @@ def fetch_all(symbols: list[str]) -> int:
         for i, sym in enumerate(symbols[:MAX_SYMBOLS_PER_RUN], 1):
             for attempt in range(1, RETRIES + 1):
                 try:
-                    df = fetch_chart(
+                    df, meta_names = fetch_chart(
                         sym,
                         datetime.combine(start, datetime.min.time()),
                         datetime.combine(end,   datetime.min.time()),
                     )
                     n = upsert_prices(con, df)
+                    upsert_symbol(con, sym, meta_names)
                     print(f"{sym}: rows {n}")
                     total += n
                     break
