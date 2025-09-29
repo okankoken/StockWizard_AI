@@ -12,7 +12,7 @@ BIST hisseleri için **veri toplama → hesaplama → görselleştirme → sohbe
 | **Streamlit**      | Web UI framework                        | ![Streamlit](https://streamlit.io/images/brand/streamlit-logo-primary-colormark-darktext.png)       |
 | **FastAPI**        | Backend API framework                   | ![FastAPI](https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png)                              |
 | **Python**         | Ana programlama dili                    | ![Python](https://www.python.org/static/community_logos/python-logo.png)                           |
-| **Google CSE**     | Haber arama motoru                      | ![Google](https://developers.google.com/static/search/docs/images/google-search-logo.svg)          |
+| **Google CSE**     | Haber arama motoru                      | <img src="assets/google.png" height="70">          |
 
 - 📊 **Yahoo Finance** — BIST hisse senedi fiyat verileri
 - 🗄️ **SQLite** — Hafif ve hızlı veri saklama
