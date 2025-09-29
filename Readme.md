@@ -6,13 +6,13 @@ BIST hisseleri için **veri toplama → hesaplama → görselleştirme → sohbe
 
 | Teknoloji/Araç     | Açıklama                                | Logo                                                                                                 |
 |--------------------|-----------------------------------------|------------------------------------------------------------------------------------------------------|
-| **Yahoo Finance API** | BIST hisse senedi verileri           | ![Yahoo](https://s.yimg.com/cv/apiv2/social/images/yahoo_default_logo.png)                         |
+| **Yahoo Finance API** | BIST hisse senedi verileri           | <img src="assets/yahoo.ypg" height="150">                         |
 | **SQLite**         | Hafif veritabanı çözümü                 | ![SQLite](https://www.sqlite.org/images/sqlite370_banner.gif)                                       |
-| **Gemini AI** | Google'ın LLM modeli | <img src="assets/gemini-logo.png" height="70"> |
-| **Streamlit**      | Web UI framework                        | ![Streamlit](https://streamlit.io/images/brand/streamlit-logo-primary-colormark-darktext.png)       |
-| **FastAPI**        | Backend API framework                   | ![FastAPI](https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png)                              |
+| **Gemini AI** | Google'ın LLM modeli                         | <img src="assets/gemini-logo.png" height="150"> |
+| **Streamlit**      | Web UI framework                        | <img src="assets/strealit.png" height="150">       |
+| **FastAPI**        | Backend API framework                   | <img src="assets/fastapi.png" height="150">                               |
 | **Python**         | Ana programlama dili                    | ![Python](https://www.python.org/static/community_logos/python-logo.png)                           |
-| **Google CSE**     | Haber arama motoru                      | <img src="assets/google.png" height="70">          |
+| **Google CSE**     | Haber arama motoru                      | <img src="assets/google.png" height="150">          |
 
 - 📊 **Yahoo Finance** — BIST hisse senedi fiyat verileri
 - 🗄️ **SQLite** — Hafif ve hızlı veri saklama
