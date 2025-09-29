@@ -8,7 +8,8 @@ BIST hisseleri için **veri toplama → hesaplama → görselleştirme → sohbe
 |--------------------|-----------------------------------------|------------------------------------------------------------------------------------------------------|
 | **Yahoo Finance API** | BIST hisse senedi verileri           | ![Yahoo](https://s.yimg.com/cv/apiv2/social/images/yahoo_default_logo.png)                         |
 | **SQLite**         | Hafif veritabanı çözümü                 | ![SQLite](https://www.sqlite.org/images/sqlite370_banner.gif)                                       |
-| **Gemini AI**      | Google'ın LLM modeli                    | ![Gemini](https://developers.google.com/static/ai/images/gemini-api-logo.svg)                       |
+| **Gemini AI** | Google'ın LLM modeli | <img src="assets/gemini-logo.png" height="22"> |
+
 | **Streamlit**      | Web UI framework                        | ![Streamlit](https://streamlit.io/images/brand/streamlit-logo-primary-colormark-darktext.png)       |
 | **FastAPI**        | Backend API framework                   | ![FastAPI](https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png)                              |
 | **Python**         | Ana programlama dili                    | ![Python](https://www.python.org/static/community_logos/python-logo.png)                           |
@@ -126,7 +127,7 @@ bash run.sh
 
 **Erişim:**
 - **UI**: http://localhost:8501
-- **API**: http://localhost:8008
+- **API**: http://localhost:8008/docs
 
 ---
 
