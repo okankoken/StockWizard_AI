@@ -6,10 +6,10 @@ BIST hisseleri için **veri toplama → hesaplama → görselleştirme → sohbe
 
 | Teknoloji/Araç     | Açıklama                                | Logo                                                                                                 |
 |--------------------|-----------------------------------------|------------------------------------------------------------------------------------------------------|
-| **Yahoo Finance API** | BIST hisse senedi verileri           | <img src="assets/yahoo.ypg" height="150">                         |
+| **Yahoo Finance API** | BIST hisse senedi verileri           | <img src="assets/yahoo.jpg" height="150">                         |
 | **SQLite**         | Hafif veritabanı çözümü                 | ![SQLite](https://www.sqlite.org/images/sqlite370_banner.gif)                                       |
 | **Gemini AI** | Google'ın LLM modeli                         | <img src="assets/gemini-logo.png" height="150"> |
-| **Streamlit**      | Web UI framework                        | <img src="assets/strealit.png" height="150">       |
+| **Streamlit**      | Web UI framework                        | <img src="assets/streamlit.png" height="150">       |
 | **FastAPI**        | Backend API framework                   | <img src="assets/fastapi.png" height="150">                               |
 | **Python**         | Ana programlama dili                    | ![Python](https://www.python.org/static/community_logos/python-logo.png)                           |
 | **Google CSE**     | Haber arama motoru                      | <img src="assets/google.png" height="150">          |
