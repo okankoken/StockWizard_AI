@@ -44,7 +44,7 @@ def reset_db():
     );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_prices_symbol_date ON prices(symbol, date);")
-    # symbols table: names + prev_close/last_price/asof from chart meta
+    # symbols: meta + 1G icin gerekli alanlar
     cur.execute("""
     CREATE TABLE IF NOT EXISTS symbols(
         symbol TEXT PRIMARY KEY,
@@ -79,29 +79,31 @@ def load_symbols() -> list[str]:
         symbols.append(s)
     return sorted(set(symbols))
 
-def fetch_chart(symbol: str, start_date: datetime, end_date: datetime):
-    """
-    Returns (df, meta_out) where df is OHLCV and meta_out has short_name, long_name,
-    prev_close (with chartPreviousClose fallback), last_price, asof.
-    """
+def _request_chart(symbol: str, params: dict) -> dict:
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
-    params = {
-        "period1": epoch_utc(start_date),
-        "period2": epoch_utc(end_date),
-        "interval": "1d",
-        "events": "div,split",
-        "includePrePost": "false",
-    }
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     r = requests.get(url, params=params, headers=headers, timeout=30)
-
     if r.status_code == 429:
         raise RuntimeError("429 Too Many Requests")
     if r.status_code == 404:
         raise SymbolNotFoundError(f"404 Not Found for {symbol}")
     r.raise_for_status()
+    return r.json()
 
-    js = r.json()
+def fetch_chart(symbol: str, start_date: datetime, end_date: datetime):
+    """
+    Returns (df, meta_out).
+    df: OHLCV daily bars.
+    meta_out: short_name, long_name, prev_close (strict), last_price (strict), asof.
+    """
+    # A) uzun aralik -> OHLCV
+    js = _request_chart(symbol, {
+        "period1": epoch_utc(start_date),
+        "period2": epoch_utc(end_date),
+        "interval": "1d",
+        "events": "div,split",
+        "includePrePost": "false",
+    })
     ch = js.get("chart", {}) or {}
     if ch.get("error"):
         code = (ch["error"].get("code") or "").lower()
@@ -109,21 +111,13 @@ def fetch_chart(symbol: str, start_date: datetime, end_date: datetime):
         if "not" in code or "no data" in code or "bad" in code:
             raise SymbolNotFoundError(f"{symbol}: {msg}")
         raise RuntimeError(f"{symbol}: chart.error -> {msg}")
-
-    res = (ch.get("result") or [])
-    if not res:
+    res_list = (ch.get("result") or [])
+    if not res_list:
         return pd.DataFrame(), {}
-
-    res = res[0]
+    res = res_list[0]
     meta = res.get("meta", {}) or {}
     short_name = meta.get("shortName")
     long_name  = meta.get("longName")
-
-    # prev_close: prefer previousClose; fallback to chartPreviousClose (critical for BIST)
-    prev_close = meta.get("previousClose") or meta.get("chartPreviousClose")
-
-    # last_price: prefer regularMarketPrice; fallback to last close we build from bars
-    last_price = meta.get("regularMarketPrice")
 
     ts = res.get("timestamp", []) or []
     ind = res.get("indicators", {}) or {}
@@ -150,6 +144,22 @@ def fetch_chart(symbol: str, start_date: datetime, end_date: datetime):
     df = pd.DataFrame(rows, columns=["symbol","date","open","high","low","close","adj_close","volume"])
     df = df.dropna(subset=["close","adj_close"], how="any")
 
+    # B) kisa aralik -> previousClose ve regularMarketPrice (Yahoo Change % icin)
+    js_today = _request_chart(symbol, {
+        "range": "1d",
+        "interval": "1d",
+        "events": "div,split",
+        "includePrePost": "false",
+    })
+    res_today = ((js_today.get("chart", {}) or {}).get("result") or [{}])[0]
+    meta_today = res_today.get("meta", {}) or {}
+    prev_close = meta_today.get("previousClose")
+    last_price = meta_today.get("regularMarketPrice")
+
+    # Fallbacklar
+    if prev_close is None:
+        # bazen chartPreviousClose bulunur
+        prev_close = meta_today.get("chartPreviousClose") or meta.get("chartPreviousClose")
     if last_price is None and not df.empty:
         last_price = float(df["close"].iloc[-1])
 
