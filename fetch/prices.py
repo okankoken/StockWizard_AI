@@ -44,12 +44,15 @@ def reset_db():
     );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_prices_symbol_date ON prices(symbol, date);")
-    # NEW: symbols table for names
+    # symbols table: names + prev_close/last_price/asof from chart meta
     cur.execute("""
     CREATE TABLE IF NOT EXISTS symbols(
         symbol TEXT PRIMARY KEY,
         short_name TEXT,
-        long_name  TEXT
+        long_name  TEXT,
+        prev_close REAL,
+        last_price REAL,
+        asof TEXT
     );
     """)
     con.commit()
@@ -78,7 +81,8 @@ def load_symbols() -> list[str]:
 
 def fetch_chart(symbol: str, start_date: datetime, end_date: datetime):
     """
-    Returns (df, meta_names) where df is OHLCV and meta_names is dict(short_name,long_name).
+    Returns (df, meta_out) where df is OHLCV and meta_out has short_name, long_name,
+    prev_close (with chartPreviousClose fallback), last_price, asof.
     """
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {
@@ -115,6 +119,12 @@ def fetch_chart(symbol: str, start_date: datetime, end_date: datetime):
     short_name = meta.get("shortName")
     long_name  = meta.get("longName")
 
+    # prev_close: prefer previousClose; fallback to chartPreviousClose (critical for BIST)
+    prev_close = meta.get("previousClose") or meta.get("chartPreviousClose")
+
+    # last_price: prefer regularMarketPrice; fallback to last close we build from bars
+    last_price = meta.get("regularMarketPrice")
+
     ts = res.get("timestamp", []) or []
     ind = res.get("indicators", {}) or {}
     quote = (ind.get("quote") or [{}])[0]
@@ -139,7 +149,18 @@ def fetch_chart(symbol: str, start_date: datetime, end_date: datetime):
 
     df = pd.DataFrame(rows, columns=["symbol","date","open","high","low","close","adj_close","volume"])
     df = df.dropna(subset=["close","adj_close"], how="any")
-    return df, {"short_name": short_name, "long_name": long_name}
+
+    if last_price is None and not df.empty:
+        last_price = float(df["close"].iloc[-1])
+
+    meta_out = {
+        "short_name": short_name,
+        "long_name": long_name,
+        "prev_close": prev_close,
+        "last_price": last_price,
+        "asof": datetime.now(timezone.utc).date().isoformat(),
+    }
+    return df, meta_out
 
 def upsert_prices(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     if df is None or df.empty:
@@ -155,16 +176,20 @@ def upsert_prices(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     con.commit()
     return len(rows)
 
-def upsert_symbol(con: sqlite3.Connection, symbol: str, names: dict):
-    if not names:
+def upsert_symbol(con: sqlite3.Connection, symbol: str, meta: dict):
+    if not meta:
         return
     con.execute("""
-        INSERT INTO symbols(symbol, short_name, long_name)
-        VALUES (?,?,?)
+        INSERT INTO symbols(symbol, short_name, long_name, prev_close, last_price, asof)
+        VALUES (?,?,?,?,?,?)
         ON CONFLICT(symbol) DO UPDATE SET
           short_name=COALESCE(excluded.short_name, short_name),
-          long_name =COALESCE(excluded.long_name, long_name);
-    """, (symbol, names.get("short_name"), names.get("long_name")))
+          long_name =COALESCE(excluded.long_name,  long_name),
+          prev_close=COALESCE(excluded.prev_close, prev_close),
+          last_price=COALESCE(excluded.last_price, last_price),
+          asof=excluded.asof;
+    """, (symbol, meta.get("short_name"), meta.get("long_name"),
+          meta.get("prev_close"), meta.get("last_price"), meta.get("asof")))
     con.commit()
 
 def fetch_all(symbols: list[str]) -> int:
@@ -176,13 +201,13 @@ def fetch_all(symbols: list[str]) -> int:
         for i, sym in enumerate(symbols[:MAX_SYMBOLS_PER_RUN], 1):
             for attempt in range(1, RETRIES + 1):
                 try:
-                    df, meta_names = fetch_chart(
+                    df, meta = fetch_chart(
                         sym,
                         datetime.combine(start, datetime.min.time()),
                         datetime.combine(end,   datetime.min.time()),
                     )
                     n = upsert_prices(con, df)
-                    upsert_symbol(con, sym, meta_names)
+                    upsert_symbol(con, sym, meta)
                     print(f"{sym}: rows {n}")
                     total += n
                     break
